@@ -23,12 +23,16 @@ jobs:
   predownload:
     runs-on: ubuntu-latest
     steps:
-      - name: Free disk space
+      - name: Free disk space (aggressive)
         run: |
           echo "=== Before cleanup ==="
           df -h /
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup 2>/dev/null || true
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup \
+                      /usr/local/share/boost /usr/local/share/powershell \
+                      /usr/share/swift /usr/share/miniconda /opt/az 2>/dev/null || true
           sudo apt-get clean -y 2>/dev/null || true
+          sudo apt-get autoremove -y 2>/dev/null || true
+          docker system prune -af --volumes 2>/dev/null || true
           echo "=== After cleanup ==="
           df -h /
 
@@ -41,12 +45,6 @@ jobs:
       - name: Pull base image
         run: docker pull $BASE_IMAGE
 
-      - name: Show download-to-cache help
-        continue-on-error: true
-        run: |
-          echo "=== download-to-cache --help ==="
-          docker run --rm $BASE_IMAGE download-to-cache --help 2>&1 || true
-
       - name: Run download-to-cache (skip weights via size monitor)
         id: download
         continue-on-error: true
@@ -58,7 +56,7 @@ jobs:
 
           echo "=== Starting download-to-cache ==="
           echo "Profile: ${{ inputs.profile_id }}"
-          echo "Strategy: monitor file sizes, kill when any file exceeds 500MB"
+          echo "Strategy: poll every 1s, kill when total cache > 200MB"
 
           # Launch download in background
           docker run --rm \
@@ -68,24 +66,25 @@ jobs:
             download-to-cache -p ${{ inputs.profile_id }} > download.log 2>&1 &
           DOWNLOAD_PID=$!
 
-          # Poll every 3s; kill if a large file appears or after 10 min
-          for i in $(seq 1 200); do
+          # Poll every 1s; kill if total cache size exceeds 200MB or after 10 min
+          THRESHOLD_MB=200
+          for i in $(seq 1 600); do
             if ! kill -0 $DOWNLOAD_PID 2>/dev/null; then
               echo "Download process finished on its own"
               break
             fi
-            LARGE_FILE=$(find ./nim-cache -type f -size +500M 2>/dev/null | head -1)
-            if [ -n "$LARGE_FILE" ]; then
-              echo "⚠️  Large file detected: $LARGE_FILE"
+            CACHE_SIZE=$(du -sm ./nim-cache 2>/dev/null | cut -f1)
+            CACHE_SIZE=${CACHE_SIZE:-0}
+            if [ "$CACHE_SIZE" -gt "$THRESHOLD_MB" ]; then
+              echo "⚠️  Cache size ${CACHE_SIZE}MB exceeds ${THRESHOLD_MB}MB threshold"
               echo "Killing download to skip model weights..."
               kill $DOWNLOAD_PID 2>/dev/null
-              sleep 2
+              sleep 1
               kill -9 $DOWNLOAD_PID 2>/dev/null
-              # Stop any lingering containers
               docker ps -q | xargs -r docker stop 2>/dev/null || true
               break
             fi
-            sleep 3
+            sleep 1
           done
 
           wait $DOWNLOAD_PID 2>/dev/null || true
@@ -110,25 +109,26 @@ jobs:
           echo "=== Removing .safetensors files ==="
           find ./nim-cache -name "*.safetensors" -type f -exec rm -v {} \; 2>/dev/null || true
           echo ""
-          echo "=== Removing any file > 500MB ==="
-          find ./nim-cache -type f -size +500M -exec rm -v {} \; 2>/dev/null || true
+          echo "=== Removing any file > 100MB ==="
+          find ./nim-cache -type f -size +100M -exec rm -v {} \; 2>/dev/null || true
           echo ""
           echo "=== Removing incomplete .tmp / .partial files ==="
-          find ./nim-cache \( -name "*.tmp" -o -name "*.partial" -o -name "*.lock" \) -type f -exec rm -v {} \; 2>/dev/null || true
+          find ./nim-cache \( -name "*.tmp" -o -name "*.partial" -o -name "*.lock" -o -name "*.incomplete" \) -type f -exec rm -v {} \; 2>/dev/null || true
           echo ""
           echo "=== Final cache contents ==="
           find ./nim-cache -type f -exec ls -lh {} \; 2>/dev/null || echo "No files"
           echo ""
           du -sh ./nim-cache 2>/dev/null
 
-      - name: Check disk space
-        run: df -h /
+      - name: Clean up Docker and check disk
+        run: |
+          docker system prune -af --volumes 2>/dev/null || true
+          echo "=== Disk space ==="
+          df -h /
 
       - name: Build pre-download image
         run: |
-          # Ensure nim-cache dir exists even if empty
           mkdir -p ./nim-cache
-
           cat > Dockerfile <<'DOCKEREOF'
           FROM ghcr.io/lin285170/nim-meta-muse-glimmer:2.1.2-variant
           COPY --chown=nvs:nvs nim-cache/ /opt/nim/.cache/
@@ -147,7 +147,7 @@ jobs:
       - name: Summary
         run: |
           echo "============================================"
-          echo "✅ Pre-download image pushed"
+          echo "Pre-download image pushed"
           echo ""
           echo "Image: ghcr.io/lin285170/nim-meta-muse-glimmer:${{ inputs.new_tag }}"
           echo ""
@@ -156,21 +156,4 @@ jobs:
           echo ""
           echo "Config files included:"
           find ./nim-cache -type f 2>/dev/null
-          echo ""
-          echo "============================================"
-          echo "本地使用方法："
-          echo ""
-          echo "1. 拉取镜像："
-          echo "   docker pull ghcr.io/lin285170/nim-meta-muse-glimmer:${{ inputs.new_tag }}"
-          echo ""
-          echo "2. 查看镜像内缓存结构："
-          echo "   docker run --rm --entrypoint find ghcr.io/lin285170/nim-meta-muse-glimmer:${{ inputs.new_tag }} /opt/nim/.cache -type f"
-          echo ""
-          echo "3. 运行（需要代理用于 filemap 检查，权重挂载到对应目录）："
-          echo "   docker run --gpus all \\"
-          echo "     -e NGC_API_KEY=你的KEY \\"
-          echo "     -e HTTPS_PROXY=http://代理:端口 \\"
-          echo "     -v /本地权重目录:/opt/nim/.cache/对应路径 \\"
-          echo "     -p 8000:8000 \\"
-          echo "     ghcr.io/lin285170/nim-meta-muse-glimmer:${{ inputs.new_tag }}"
           echo "============================================"
