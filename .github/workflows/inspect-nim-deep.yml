@@ -1,0 +1,105 @@
+﻿name: Inspect NIM Deep
+
+on:
+  workflow_dispatch:
+
+permissions:
+  packages: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Pull image
+        run: docker pull ghcr.io/lin285170/nim-meta-muse-glimmer:2.1.2-variant
+
+      - name: Cat start_server.sh
+        run: |
+          echo "=== start_server.sh ==="
+          docker run --rm --entrypoint cat ghcr.io/lin285170/nim-meta-muse-glimmer:2.1.2-variant /opt/nim/start_server.sh
+
+      - name: Cat scripts
+        run: |
+          for f in /opt/nim/scripts/runtime_cache_contract.sh /opt/nim/scripts/nginx_env_vars.sh /opt/nim/scripts/generate_nginx_config.sh; do
+            echo "=== $f ==="
+            docker run --rm --entrypoint cat ghcr.io/lin285170/nim-meta-muse-glimmer:2.1.2-variant "$f" 2>&1 | head -30
+            echo ""
+          done
+
+      - name: List nimlib package
+        run: |
+          echo "=== nimlib top-level ==="
+          docker run --rm --entrypoint ls ghcr.io/lin285170/nim-meta-muse-glimmer:2.1.2-variant -la /opt/venv/lib/python3.12/site-packages/nimlib/
+          echo ""
+          echo "=== nimlib/llm ==="
+          docker run --rm --entrypoint ls ghcr.io/lin285170/nim-meta-muse-glimmer:2.1.2-variant -la /opt/venv/lib/python3.12/site-packages/nimlib/llm/
+          echo ""
+          echo "=== nimlib all dirs ==="
+          docker run --rm --entrypoint find ghcr.io/lin285170/nim-meta-muse-glimmer:2.1.2-variant /opt/venv/lib/python3.12/site-packages/nimlib -type d 2>/dev/null
+
+      - name: Search nimlib for model download/cache logic
+        run: |
+          echo "=== Grep for NGC_API_KEY ==="
+          docker run --rm --entrypoint grep ghcr.io/lin285170/nim-meta-muse-glimmer:2.1.2-variant -rn "NGC_API_KEY" /opt/venv/lib/python3.12/site-packages/nimlib/ --include="*.py" 2>/dev/null | head -20
+          echo ""
+          echo "=== Grep for NIM_CACHE or cache_path ==="
+          docker run --rm --entrypoint grep ghcr.io/lin285170/nim-meta-muse-glimmer:2.1.2-variant -rn "NIM_CACHE\|cache_path\|CACHE_PATH" /opt/venv/lib/python3.12/site-packages/nimlib/ --include="*.py" 2>/dev/null | head -20
+          echo ""
+          echo "=== Grep for model_source or model_dir or local_model ==="
+          docker run --rm --entrypoint grep ghcr.io/lin285170/nim-meta-muse-glimmer:2.1.2-variant -rn "model_source\|model_dir\|local_model\|MODEL_SOURCE\|NIM_MODEL" /opt/venv/lib/python3.12/site-packages/nimlib/ --include="*.py" 2>/dev/null | head -20
+          echo ""
+          echo "=== Grep for ngc or filemap or guest ==="
+          docker run --rm --entrypoint grep ghcr.io/lin285170/nim-meta-muse-glimmer:2.1.2-variant -rn "ngc\|filemap\|guest\|api\.ngc" /opt/venv/lib/python3.12/site-packages/nimlib/ --include="*.py" 2>/dev/null | head -20
+          echo ""
+          echo "=== Grep for offline or local path ==="
+          docker run --rm --entrypoint grep ghcr.io/lin285170/nim-meta-muse-glimmer:2.1.2-variant -rn "offline\|local.*model\|model.*local\|HF_HOME\|huggingface" /opt/venv/lib/python3.12/site-packages/nimlib/ --include="*.py" 2>/dev/null | head -30
+          echo ""
+          echo "=== Grep for download ==="
+          docker run --rm --entrypoint grep ghcr.io/lin285170/nim-meta-muse-glimmer:2.1.2-variant -rn "download" /opt/venv/lib/python3.12/site-packages/nimlib/ --include="*.py" -l 2>/dev/null | head -10
+
+      - name: Cat key nimlib files
+        run: |
+          for f in \
+            /opt/venv/lib/python3.12/site-packages/nimlib/llm/arg_utils.py \
+            /opt/venv/lib/python3.12/site-packages/nimlib/__init__.py; do
+            echo "=== $f (first 80 lines) ==="
+            docker run --rm --entrypoint head ghcr.io/lin285170/nim-meta-muse-glimmer:2.1.2-variant -80 "$f" 2>&1
+            echo ""
+          done
+
+      - name: Search for model download binary/scripts
+        run: |
+          echo "=== Find executables in nimlib ==="
+          docker run --rm --entrypoint find ghcr.io/lin285170/nim-meta-muse-glimmer:2.1.2-variant /opt/venv/lib/python3.12/site-packages/nimlib -type f -executable 2>/dev/null | head -20
+          echo ""
+          echo "=== Find model_download or fetch scripts ==="
+          docker run --rm --entrypoint find ghcr.io/lin285170/nim-meta-muse-glimmer:2.1.2-variant /opt/venv -name "*model*" -type f 2>/dev/null | head -20
+          echo ""
+          echo "=== Find nim-welcome or nim_setup ==="
+          docker run --rm --entrypoint find ghcr.io/lin285170/nim-meta-muse-glimmer:2.1.2-variant / -maxdepth 4 -name "*nim*welcome*" -o -name "*nim*setup*" -o -name "*nim*fetch*" 2>/dev/null | head -10
+          echo ""
+          echo "=== Check /opt/nim/.cache structure ==="
+          docker run --rm --entrypoint find ghcr.io/lin285170/nim-meta-muse-glimmer:2.1.2-variant /opt/nim/.cache -maxdepth 4 2>/dev/null | head -30
+          echo ""
+          echo "=== Grep for NIM_MODEL_NAME ==="
+          docker run --rm --entrypoint grep ghcr.io/lin285170/nim-meta-muse-glimmer:2.1.2-variant -rn "NIM_MODEL_NAME" /opt/venv/lib/python3.12/site-packages/nimlib/ --include="*.py" 2>/dev/null | head -15
+          echo ""
+          echo "=== Grep for safetensors or model loading ==="
+          docker run --rm --entrypoint grep ghcr.io/lin285170/nim-meta-muse-glimmer:2.1.2-variant -rn "safetensors\|model_path\|from_pretrained\|model_name_or_path" /opt/venv/lib/python3.12/site-packages/nimlib/ --include="*.py" 2>/dev/null | head -20
+
+      - name: Check tuning_configs and etc
+        run: |
+          echo "=== tuning_configs ==="
+          docker run --rm --entrypoint ls ghcr.io/lin285170/nim-meta-muse-glimmer:2.1.2-variant -la /opt/nim/tuning_configs/
+          echo ""
+          echo "=== etc ==="
+          docker run --rm --entrypoint find ghcr.io/lin285170/nim-meta-muse-glimmer:2.1.2-variant /opt/nim/etc -type f 2>/dev/null | head -20
+          echo ""
+          echo "=== VERSION ==="
+          docker run --rm --entrypoint cat ghcr.io/lin285170/nim-meta-muse-glimmer:2.1.2-variant /opt/nim/VERSION
