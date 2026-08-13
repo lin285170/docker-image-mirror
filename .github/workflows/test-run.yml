@@ -1,0 +1,104 @@
+﻿name: Test Run Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: '要测试的镜像（默认从 images.txt 同步后的 GHCR 镜像）'
+        required: false
+        default: 'ghcr.io/lin285170/nim-meta-muse-glimmer:2.1.2-variant'
+
+permissions:
+  packages: read
+
+jobs:
+  test-run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Show runner info
+        run: |
+          echo "=== Runner OS ==="
+          uname -a
+          echo "=== CPU ==="
+          nproc
+          cat /proc/cpuinfo | grep "model name" | head -1
+          echo "=== Memory ==="
+          free -h
+          echo "=== GPU (if any) ==="
+          nvidia-smi 2>&1 || echo "No NVIDIA GPU detected"
+          echo "=== Disk ==="
+          df -h /
+
+      - name: Pull image
+        run: |
+          echo "=== Pulling ${{ inputs.image }} ==="
+          docker pull "${{ inputs.image }}"
+          echo "=== Pull successful ==="
+
+      - name: Inspect image
+        run: |
+          echo "=== Image metadata ==="
+          docker image inspect "${{ inputs.image }}" --format '
+          Architecture: {{.Architecture}}
+          OS: {{.Os}}
+          Size: {{.Size}} bytes
+          Created: {{.Created}}
+          '
+          echo ""
+          echo "=== Entrypoint ==="
+          docker image inspect "${{ inputs.image }}" --format '{{json .Config.Entrypoint}}'
+          echo ""
+          echo "=== Cmd ==="
+          docker image inspect "${{ inputs.image }}" --format '{{json .Config.Cmd}}'
+          echo ""
+          echo "=== Exposed Ports ==="
+          docker image inspect "${{ inputs.image }}" --format '{{json .Config.ExposedPorts}}'
+          echo ""
+          echo "=== Env (first 20) ==="
+          docker image inspect "${{ inputs.image }}" --format '{{json .Config.Env}}' | python3 -c "
+          import json, sys
+          envs = json.load(sys.stdin)
+          for e in envs[:20]:
+              print(e)
+          if len(envs) > 20:
+              print(f'... and {len(envs)-20} more')
+          "
+          echo ""
+          echo "=== WorkingDir ==="
+          docker image inspect "${{ inputs.image }}" --format '{{.Config.WorkingDir}}'
+          echo ""
+          echo "=== Labels ==="
+          docker image inspect "${{ inputs.image }}" --format '{{json .Config.Labels}}'
+
+      - name: List image layers
+        run: |
+          echo "=== Layer history (last 10) ==="
+          docker image history "${{ inputs.image }}" --no-trunc 2>&1 | head -15
+
+      - name: Attempt to run container
+        continue-on-error: true
+        run: |
+          echo "=== Attempting to start container (timeout 30s) ==="
+          echo "NOTE: NIM images require NVIDIA GPU, this will likely fail on a CPU-only runner."
+          echo ""
+          timeout 30 docker run --rm "${{ inputs.image }}" 2>&1 || {
+            echo ""
+            echo "=== Container exited (expected on CPU-only runner) ==="
+            echo "NIM 镜像需要 NVIDIA GPU + nvidia-container-toolkit 才能完整运行。"
+            echo "GitHub Actions 标准 runner 没有 GPU，此步骤仅验证容器能否启动。"
+          }
+
+      - name: Summary
+        run: |
+          echo "============================================"
+          echo "测试完成"
+          echo "镜像: ${{ inputs.image }}"
+          echo "拉取: 成功"
+          echo "运行: 需要 GPU 环境（GitHub 免费 runner 无 GPU）"
+          echo "============================================"

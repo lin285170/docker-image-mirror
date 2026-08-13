@@ -1,0 +1,98 @@
+﻿name: Inspect NIM Image
+
+on:
+  workflow_dispatch:
+
+permissions:
+  packages: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Pull image
+        run: docker pull ghcr.io/lin285170/nim-meta-muse-glimmer:2.1.2-variant
+
+      - name: Inspect image config
+        run: |
+          echo "=== Entrypoint ==="
+          docker image inspect ghcr.io/lin285170/nim-meta-muse-glimmer:2.1.2-variant --format '{{json .Config.Entrypoint}}'
+          echo ""
+          echo "=== Cmd ==="
+          docker image inspect ghcr.io/lin285170/nim-meta-muse-glimmer:2.1.2-variant --format '{{json .Config.Cmd}}'
+          echo ""
+          echo "=== WorkingDir ==="
+          docker image inspect ghcr.io/lin285170/nim-meta-muse-glimmer:2.1.2-variant --format '{{.Config.WorkingDir}}'
+          echo ""
+          echo "=== Env vars ==="
+          docker image inspect ghcr.io/lin285170/nim-meta-muse-glimmer:2.1.2-variant --format '{{json .Config.Env}}' | python3 -c "
+          import json, sys
+          for e in json.load(sys.stdin):
+              print(e)
+          "
+          echo ""
+          echo "=== Labels ==="
+          docker image inspect ghcr.io/lin285170/nim-meta-muse-glimmer:2.1.2-variant --format '{{json .Config.Labels}}'
+
+      - name: Find entrypoint and model scripts
+        run: |
+          echo "=== Find entrypoint script ==="
+          ENTRY=$(docker image inspect ghcr.io/lin285170/nim-meta-muse-glimmer:2.1.2-variant --format '{{json .Config.Entrypoint}}' | python3 -c "import json,sys; e=json.load(sys.stdin); print(e[0] if e else '')")
+          echo "Entrypoint: $ENTRY"
+          echo ""
+          echo "=== Cat entrypoint script ==="
+          docker run --rm --entrypoint cat ghcr.io/lin285170/nim-meta-muse-glimmer:2.1.2-variant "$ENTRY" 2>&1 | head -100
+          echo ""
+          echo "=== Find nim-related scripts ==="
+          docker run --rm --entrypoint find ghcr.io/lin285170/nim-meta-muse-glimmer:2.1.2-variant / -maxdepth 4 -name "*.py" -path "*nim*" 2>/dev/null | head -20
+          echo ""
+          echo "=== Find arg_utils.py ==="
+          docker run --rm --entrypoint find ghcr.io/lin285170/nim-meta-muse-glimmer:2.1.2-variant / -name "arg_utils.py" 2>/dev/null | head -5
+          echo ""
+          echo "=== Find tokio related ==="
+          docker run --rm --entrypoint find ghcr.io/lin285170/nim-meta-muse-glimmer:2.1.2-variant / -name "tokio*" 2>/dev/null | head -5
+          echo ""
+          echo "=== Find model cache / download scripts ==="
+          docker run --rm --entrypoint find ghcr.io/lin285170/nim-meta-muse-glimmer:2.1.2-variant / -maxdepth 4 \( -name "*model*download*" -o -name "*fetch*" -o -name "*cache*" \) -type f 2>/dev/null | head -20
+          echo ""
+          echo "=== Check /opt/nim structure ==="
+          docker run --rm --entrypoint ls ghcr.io/lin285170/nim-meta-muse-glimmer:2.1.2-variant -la /opt/nim/ 2>&1
+          echo ""
+          docker run --rm --entrypoint find ghcr.io/lin285170/nim-meta-muse-glimmer:2.1.2-variant /opt/nim -maxdepth 3 -type d 2>/dev/null | head -30
+
+      - name: Search for NIM_CACHE_DIR and model loading logic
+        run: |
+          echo "=== Grep for NIM_CACHE_DIR ==="
+          docker run --rm --entrypoint grep ghcr.io/lin285170/nim-meta-muse-glimmer:2.1.2-variant -r "NIM_CACHE_DIR" /opt/nim/ --include="*.py" --include="*.sh" --include="*.yaml" --include="*.yml" -l 2>/dev/null | head -10
+          echo ""
+          echo "=== Grep for NIM_MODEL_DIR ==="
+          docker run --rm --entrypoint grep ghcr.io/lin285170/nim-meta-muse-glimmer:2.1.2-variant -r "NIM_MODEL_DIR\|MODEL_DIR\|model_path\|LOCAL_MODEL" /opt/nim/ --include="*.py" --include="*.sh" -l 2>/dev/null | head -10
+          echo ""
+          echo "=== Grep for ngc / filemap / guest ==="
+          docker run --rm --entrypoint grep ghcr.io/lin285170/nim-meta-muse-glimmer:2.1.2-variant -r "filemap\|guest\|api.ngc" /opt/nim/ -l 2>/dev/null | head -10
+          echo ""
+          echo "=== Grep for HTTPS_PROXY ==="
+          docker run --rm --entrypoint grep ghcr.io/lin285170/nim-meta-muse-glimmer:2.1.2-variant -r "HTTPS_PROXY\|proxy\|PROXY" /opt/nim/ --include="*.py" --include="*.sh" -l 2>/dev/null | head -10
+
+      - name: Check startup scripts
+        run: |
+          echo "=== /opt/nim/startup.sh or similar ==="
+          docker run --rm --entrypoint find ghcr.io/lin285170/nim-meta-muse-glimmer:2.1.2-variant /opt/nim -maxdepth 2 -name "*.sh" 2>/dev/null
+          echo ""
+          echo "=== Dockerfile-visible scripts ==="
+          docker run --rm --entrypoint ls ghcr.io/lin285170/nim-meta-muse-glimmer:2.1.2-variant -la /opt/nim/ 2>&1
+          echo ""
+          for f in /opt/nim/server.py /opt/nim/nim_server.py /opt/nim/start.sh /opt/nim/entrypoint.sh; do
+            echo "=== $f ==="
+            docker run --rm --entrypoint cat ghcr.io/lin285170/nim-meta-muse-glimmer:2.1.2-variant "$f" 2>&1 | head -50
+            echo ""
+          done
+
+      - name: Summary
+        run: echo "Inspection complete. Check logs above for model loading mechanism."
