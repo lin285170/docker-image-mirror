@@ -1,0 +1,10 @@
+﻿# 待同步的 Docker 镜像列表
+# 每行一个镜像，格式与 docker pull 一致
+# 官方镜像可省略 library/ 前缀，脚本自动补全
+# 以 # 开头的行会被忽略
+
+nginx:1.25.3
+library/alpine:3.19
+bitnami/redis:7.2
+grafana/grafana:10.2.0
+prom/prometheus:v2.48.1

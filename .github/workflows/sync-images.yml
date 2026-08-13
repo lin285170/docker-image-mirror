@@ -1,0 +1,113 @@
+﻿name: Sync Docker Images
+
+on:
+  schedule:
+    # 每天 UTC 00:00（北京时间 08:00）自动同步
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+    inputs:
+      images:
+        description: '要同步的镜像列表（每行一个，留空则使用 images.txt）'
+        required: false
+        default: ''
+
+permissions:
+  packages: write
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Sync images
+        env:
+          OWNER: ${{ github.repository_owner }}
+          INPUT_IMAGES: ${{ inputs.images }}
+        run: |
+          set -euo pipefail
+
+          # 获取镜像列表：优先使用手动输入，否则读取 images.txt
+          if [ -n "${INPUT_IMAGES}" ]; then
+            IMAGES="${INPUT_IMAGES}"
+          else
+            IMAGES="$(grep -vE '^\s*#' images.txt | grep -vE '^\s*$' || true)"
+          fi
+
+          if [ -z "${IMAGES}" ]; then
+            echo "没有需要同步的镜像。"
+            exit 0
+          fi
+
+          # 将源镜像名规范化为 docker.io/<namespace>/<name>:<tag>
+          normalize_source() {
+            local img="$1"
+            local name tag
+            # 拆分 name:tag
+            if [[ "$img" == *:* ]]; then
+              name="${img%:*}"
+              tag="${img##*:}"
+            else
+              name="$img"
+              tag="latest"
+            fi
+            # 补全 registry / library 前缀
+            if [[ "$name" != */* ]]; then
+              name="library/$name"
+            elif [[ "$name" != */*/* ]] && [[ "$name" != *.*/* ]]; then
+              : # 已是 user/repo 形式，保留
+            fi
+            # 若未包含 registry 前缀，补上 docker.io/
+            if [[ "$name" != *.*/* ]] && [[ "$name" != *.*/*:* ]]; then
+              name="docker.io/$name"
+            fi
+            echo "${name}:${tag}"
+          }
+
+          # 将镜像名转换为 GHCR 目标名（单层命名空间，多级路径用 - 连接）
+          to_target() {
+            local img="$1"
+            local name tag ns
+            if [[ "$img" == *:* ]]; then
+              name="${img%:*}"
+              tag="${img##*:}"
+            else
+              name="$img"
+              tag="latest"
+            fi
+            # 去掉可能的 docker.io/ 前缀
+            name="${name#docker.io/}"
+            # 去掉 library/ 前缀
+            name="${name#library/}"
+            # 多级路径用 - 连接
+            name="${name//\//-}"
+            echo "ghcr.io/${OWNER}/${name}:${tag}"
+          }
+
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            src="$(normalize_source "$line")"
+            dst="$(to_target "$line")"
+            echo "=========================================="
+            echo "同步: $line"
+            echo "  源: $src"
+            echo "  目标: $dst"
+            echo "=========================================="
+            # 使用 buildx imagetools 复制完整多架构清单
+            if docker buildx imagetools create -t "$dst" "$src"; then
+              echo "✅ 同步成功: $dst"
+            else
+              echo "❌ 同步失败: $line (源: $src)"
+            fi
+          done <<< "$IMAGES"
+
+      - name: Summary
+        run: echo "同步流程结束。请到 https://github.com/${{ github.repository_owner }}?tab=packages 查看镜像包。"
