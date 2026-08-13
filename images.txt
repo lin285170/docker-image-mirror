@@ -8,3 +8,4 @@ library/alpine:3.19
 bitnami/redis:7.2
 grafana/grafana:10.2.0
 prom/prometheus:v2.48.1
+nvcr.io/nim/meta/muse-glimmer:2.1.2-variant
