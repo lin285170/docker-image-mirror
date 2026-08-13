@@ -52,6 +52,9 @@ jobs:
         continue-on-error: true
         run: |
           mkdir -p ./nim-cache
+          # Fix ownership: NIM container runs as UID 1000 GID 1000
+          sudo chown -R 1000:1000 ./nim-cache
+          sudo chmod -R 755 ./nim-cache
 
           echo "=== Starting download-to-cache ==="
           echo "Profile: ${{ inputs.profile_id }}"
