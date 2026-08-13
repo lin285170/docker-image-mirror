@@ -1,6 +1,7 @@
 ﻿# 待同步的 Docker 镜像列表
 # 每行一个镜像，格式与 docker pull 一致
 # 官方镜像可省略 library/ 前缀，脚本自动补全
+# 支持 docker.io / nvcr.io 等任意 registry
 # 以 # 开头的行会被忽略
 
 nginx:1.25.3

@@ -28,6 +28,15 @@ jobs:
       - name: Log in to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
+      - name: Log in to nvcr.io (if NGC_API_KEY set)
+        run: |
+          if [ -n "${{ secrets.NGC_API_KEY }}" ]; then
+            echo "${{ secrets.NGC_API_KEY }}" | docker login nvcr.io -u '$oauthtoken' --password-stdin
+            echo "nvcr.io login OK"
+          else
+            echo "NGC_API_KEY not set, skipping nvcr.io login"
+          fi
+
       - name: Sync images
         env:
           OWNER: ${{ github.repository_owner }}
@@ -47,11 +56,11 @@ jobs:
             exit 0
           fi
 
-          # 将源镜像名规范化为 docker.io/<namespace>/<name>:<tag>
+          # 将源镜像名规范化为 <registry>/<namespace>/<name>:<tag>
           normalize_source() {
             local img="$1"
             local name tag
-            # 拆分 name:tag
+            # 拆分 name:tag（从右往左找第一个冒号，避免 registry 端口干扰）
             if [[ "$img" == *:* ]]; then
               name="${img%:*}"
               tag="${img##*:}"
@@ -59,14 +68,13 @@ jobs:
               name="$img"
               tag="latest"
             fi
-            # 补全 registry / library 前缀
-            if [[ "$name" != */* ]]; then
-              name="library/$name"
-            elif [[ "$name" != */*/* ]] && [[ "$name" != *.*/* ]]; then
-              : # 已是 user/repo 形式，保留
-            fi
-            # 若未包含 registry 前缀，补上 docker.io/
-            if [[ "$name" != *.*/* ]] && [[ "$name" != *.*/*:* ]]; then
+            # 判断是否已有 registry 前缀（第一段含 . 或 :）
+            local first="${name%%/*}"
+            if [[ "$first" == *.* ]] || [[ "$first" == *:* ]]; then
+              : # 已有 registry 前缀，保留
+            elif [[ "$name" != */* ]]; then
+              name="docker.io/library/$name"
+            else
               name="docker.io/$name"
             fi
             echo "${name}:${tag}"
@@ -75,7 +83,7 @@ jobs:
           # 将镜像名转换为 GHCR 目标名（单层命名空间，多级路径用 - 连接）
           to_target() {
             local img="$1"
-            local name tag ns
+            local name tag first
             if [[ "$img" == *:* ]]; then
               name="${img%:*}"
               tag="${img##*:}"
@@ -83,12 +91,20 @@ jobs:
               name="$img"
               tag="latest"
             fi
-            # 去掉可能的 docker.io/ 前缀
+            # 去掉 docker.io/ 前缀
             name="${name#docker.io/}"
             # 去掉 library/ 前缀
             name="${name#library/}"
-            # 多级路径用 - 连接
+            # 去掉其他 registry 前缀（第一段含 . 或 : 视为 registry）
+            first="${name%%/*}"
+            if [[ "$first" == *.* ]] || [[ "$first" == *:* ]]; then
+              name="${name#*/}"
+            fi
+            # 再次去掉可能的 library/ 前缀
+            name="${name#library/}"
+            # 多级路径用 - 连接，dots 替换为 -（GHCR 包名不允许 . ）
             name="${name//\//-}"
+            name="${name//./-}"
             echo "ghcr.io/${OWNER}/${name}:${tag}"
           }
 
