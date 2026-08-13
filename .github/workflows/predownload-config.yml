@@ -7,13 +7,9 @@ on:
         description: 'Profile ID to download'
         required: true
         default: '88bdbce5034ea688e4117ee248406d11fe766bb080ec32243450327f2febf490'
-      new_tag:
-        description: 'New image tag for pre-download image'
-        required: true
-        default: '2.1.2-variant-predownload'
 
 permissions:
-  packages: write
+  packages: read
   contents: read
 
 env:
@@ -32,7 +28,6 @@ jobs:
                       /usr/share/swift /usr/share/miniconda /opt/az 2>/dev/null || true
           sudo apt-get clean -y 2>/dev/null || true
           sudo apt-get autoremove -y 2>/dev/null || true
-          docker system prune -af --volumes 2>/dev/null || true
           echo "=== After cleanup ==="
           df -h /
 
@@ -50,15 +45,13 @@ jobs:
         continue-on-error: true
         run: |
           mkdir -p ./nim-cache
-          # Fix ownership: NIM container runs as UID 1000 GID 1000
           sudo chown -R 1000:1000 ./nim-cache
           sudo chmod -R 755 ./nim-cache
 
           echo "=== Starting download-to-cache ==="
           echo "Profile: ${{ inputs.profile_id }}"
-          echo "Strategy: poll every 1s, kill when total cache > 200MB"
+          echo "Strategy: poll every 1s, kill when total cache > 100MB"
 
-          # Launch download in background
           docker run --rm \
             -e NGC_API_KEY=${{ secrets.NGC_API_KEY }} \
             -v "$(pwd)/nim-cache:/opt/nim/.cache" \
@@ -66,8 +59,7 @@ jobs:
             download-to-cache -p ${{ inputs.profile_id }} > download.log 2>&1 &
           DOWNLOAD_PID=$!
 
-          # Poll every 1s; kill if total cache size exceeds 200MB or after 10 min
-          THRESHOLD_MB=200
+          THRESHOLD_MB=100
           for i in $(seq 1 600); do
             if ! kill -0 $DOWNLOAD_PID 2>/dev/null; then
               echo "Download process finished on its own"
@@ -76,7 +68,7 @@ jobs:
             CACHE_SIZE=$(du -sm ./nim-cache 2>/dev/null | cut -f1)
             CACHE_SIZE=${CACHE_SIZE:-0}
             if [ "$CACHE_SIZE" -gt "$THRESHOLD_MB" ]; then
-              echo "⚠️  Cache size ${CACHE_SIZE}MB exceeds ${THRESHOLD_MB}MB threshold"
+              echo "Cache size ${CACHE_SIZE}MB exceeds ${THRESHOLD_MB}MB threshold"
               echo "Killing download to skip model weights..."
               kill $DOWNLOAD_PID 2>/dev/null
               sleep 1
@@ -90,8 +82,8 @@ jobs:
           wait $DOWNLOAD_PID 2>/dev/null || true
 
           echo ""
-          echo "=== Download log (last 40 lines) ==="
-          tail -40 download.log || true
+          echo "=== Download log (last 50 lines) ==="
+          tail -50 download.log || true
 
       - name: Show downloaded files
         run: |
@@ -104,7 +96,7 @@ jobs:
           echo "=== Total cache size ==="
           du -sh ./nim-cache 2>/dev/null || echo "Empty cache"
 
-      - name: Remove weight files and verify
+      - name: Remove weight files
         run: |
           echo "=== Removing .safetensors files ==="
           find ./nim-cache -name "*.safetensors" -type f -exec rm -v {} \; 2>/dev/null || true
@@ -112,7 +104,7 @@ jobs:
           echo "=== Removing any file > 100MB ==="
           find ./nim-cache -type f -size +100M -exec rm -v {} \; 2>/dev/null || true
           echo ""
-          echo "=== Removing incomplete .tmp / .partial files ==="
+          echo "=== Removing incomplete files ==="
           find ./nim-cache \( -name "*.tmp" -o -name "*.partial" -o -name "*.lock" -o -name "*.incomplete" \) -type f -exec rm -v {} \; 2>/dev/null || true
           echo ""
           echo "=== Final cache contents ==="
@@ -120,40 +112,42 @@ jobs:
           echo ""
           du -sh ./nim-cache 2>/dev/null
 
-      - name: Clean up Docker and check disk
+      - name: Compress cache for artifact
         run: |
-          docker system prune -af --volumes 2>/dev/null || true
-          echo "=== Disk space ==="
-          df -h /
+          cd nim-cache
+          tar czf ../nim-config-cache.tar.gz .
+          cd ..
+          ls -lh nim-config-cache.tar.gz
 
-      - name: Build pre-download image
-        run: |
-          mkdir -p ./nim-cache
-          cat > Dockerfile <<'DOCKEREOF'
-          FROM ghcr.io/lin285170/nim-meta-muse-glimmer:2.1.2-variant
-          COPY --chown=nvs:nvs nim-cache/ /opt/nim/.cache/
-          DOCKEREOF
-
-          echo "=== Building image ==="
-          docker build \
-            -t ghcr.io/lin285170/nim-meta-muse-glimmer:${{ inputs.new_tag }} \
-            .
-
-      - name: Push image
-        run: |
-          echo "=== Pushing image ==="
-          docker push ghcr.io/lin285170/nim-meta-muse-glimmer:${{ inputs.new_tag }}
+      - name: Upload config cache artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nim-config-cache
+          path: nim-config-cache.tar.gz
+          retention-days: 30
 
       - name: Summary
         run: |
           echo "============================================"
-          echo "Pre-download image pushed"
+          echo "Config cache uploaded as GitHub Actions artifact"
           echo ""
-          echo "Image: ghcr.io/lin285170/nim-meta-muse-glimmer:${{ inputs.new_tag }}"
+          echo "Artifact: nim-config-cache"
+          echo "Contents:"
+          find ./nim-cache -type f 2>/dev/null || echo "(empty)"
           echo ""
-          echo "Cache directory structure:"
-          find ./nim-cache -type d 2>/dev/null
+          echo "============================================"
+          echo "本地使用方法："
           echo ""
-          echo "Config files included:"
-          find ./nim-cache -type f 2>/dev/null
+          echo "1. 下载 artifact："
+          echo "   gh run download <run-id> --repo lin285170/docker-image-mirror -n nim-config-cache"
+          echo ""
+          echo "2. 解压到本地目录："
+          echo "   mkdir -p /opt/nim/.cache"
+          echo "   tar xzf nim-config-cache.tar.gz -C /opt/nim/.cache"
+          echo ""
+          echo "3. 运行容器（挂载缓存 + 本地权重）："
+          echo "   docker run --gpus all \\"
+          echo "     -v /opt/nim/.cache:/opt/nim/.cache \\"
+          echo "     -p 8000:8000 \\"
+          echo "     ghcr.io/lin285170/nim-meta-muse-glimmer:2.1.2-variant"
           echo "============================================"
