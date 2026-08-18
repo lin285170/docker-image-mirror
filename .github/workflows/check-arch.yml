@@ -1,0 +1,21 @@
+name: Check Image Arch
+
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: 'Image to inspect'
+        required: true
+        default: 'lazymio/vllm-backport:latest-sm86'
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Inspect image manifest
+        run: |
+          echo "=== Inspecting: ${{ inputs.image }} ==="
+          docker buildx imagetools inspect "${{ inputs.image }}" 2>&1 || true
+          echo ""
+          echo "=== Raw manifest ==="
+          docker manifest inspect "${{ inputs.image }}" 2>&1 || true
